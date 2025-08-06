@@ -1,0 +1,638 @@
+---
+title: "Association between poor immune function and cancer risk in adult people with HIV following enrollment"
+author: "Anuradha Vyas, MD,MPH"
+format:
+  html:
+    toc: true
+    toc-location: left
+    fontsize: 12pt
+    mainfont: "Times New Roman"
+    editor: visual
+    code-fold: false
+  pdf:
+    documentclass: article
+    highlight-style: pygments
+    number-sections: false
+    toc: false
+    fig-width: 7
+    fig-height: 4.5
+    title: "**Association between poor immune function and cancer risk in adult people with HIV following enrollment**"
+    fontsize: 12pt
+    font: "Times New Roman"
+    geometry: margin=0.5in
+    execute:
+      warning: false
+      message: false
+      echo: true
+  docx:
+    documentclass: article
+    highlight-style: pygments
+    toc: true
+    fontsize: 12pt
+    fig-align: center
+    fig-pos: "H"
+    fig-width: 7
+    fig-height: 4.5
+    mainfont: "Times New Roman"
+    execute:
+      warning: false
+      message: false
+      echo: false
+
+embed-resources: true
+editor: visual
+---
+
+\newpage
+
+# **Introduction**
+
+**Study Population:** The analytic study population consisted of adults (\>18 years old) living with HIV (PWH) who were enrolled in the study.
+
+**Exposure Definition**
+
+The primary exposure in this study was poor immune function, defined by:
+
+1.  **AIDS-defining illness (ADI)**: A history of any condition classified as an AIDS-defining illness, such as certain cancers, opportunistic infections, or other serious HIV-related conditions.
+
+2.  **CD4 count less than 200 cells/mmB3**: A CD4 count of less than 200 cells/mmB3 prior to enrollment, reflecting advanced immune suppression.
+
+3.  The exposure was further stratified by **viral suppression status** at enrollment:
+
+**Viral suppression**: Defined as having a viral load of less than 200 copies/mL at the time of enrollment.
+
+**No viral suppression**: Defined as having a viral load of 200 copies/mL or higher.
+
+# Packages
+
+```{r, warning=FALSE, message=FALSE}
+library(data.table)
+library(flowchart)
+library(tidyverse)
+library(gridExtra)
+library(plotrix)
+library(gtsummary)
+library(gt)
+library(survival)
+library(survminer)
+library(patchwork)
+library(plotly)
+```
+
+# File Path
+
+```{r}
+CD4 <- fread("C:/Users/smile/Desktop/Anu_github/7_Survival_Analysis/data/cd4_file.csv") 
+Patient <-fread("C:/Users/smile/Desktop/Anu_github/7_Survival_Analysis/data/patient_file.csv") 
+
+VL<- fread("C:/Users/smile/Desktop/Anu_github/7_Survival_Analysis/data/vl_file.csv")
+
+Kaplan_Meier_Combined_Curves <- "C:/Users/smile/Desktop/Anu_github/7_Survival_Analysis/plots/Kaplan_Meier_Combined_Curves.pdf"
+
+analytic_file_path <- "C:/Users/smile/Desktop/Anu_github/7_Survival_Analysis/data/analytic_file.csv"
+```
+
+# Data Preparation
+
+## Data Cleaning
+
+**Immune function**
+
+Poor immune function is defined as having an AIDS-defining illness or having a CD4 count less than 200 prior to enrollment. This association likely differs between those who are able to maintain HIV viral suppression and those who cannot. Viral suppression is defined as having \<200 copies/mL at enrollment.B Therefore, the exposure of immune function must be stratified into four groups.
+
+-   Immune_functionB
+
+    -   0=poor immune function and virally suppressed;
+
+    -   1=poor immune function and not virally suppressed;
+
+    -   2=good immune function and virally suppressed;
+
+    -   3=good immune function and not virally suppressed
+
+-   The lowest **CD4 count** recorded prior to enrollment was used to assess immune function. This ensures that we are capturing the most critical period of immune suppression leading up to the time of enrollment.
+
+-   The last recorded **viral load** prior to enrollment was used to determine viral suppression status. This value reflects the individual's HIV viral load before the study began, providing a snapshot of their ability to control the virus.
+
+```{r}
+
+Patient <- Patient |>
+  mutate(enrollment_date = as.Date(paste(enroll_year, 
+                                         enroll_month, 
+                                         enroll_day, sep = "-"))
+         )
+
+CD4_filtered <- CD4 |>
+  mutate(CD4_date = as.Date(paste(CD4_year, CD4_month, CD4_day, sep = "-")),
+         CD4_date_ym =as.Date(sprintf("%d-%02d-01",CD4_year, CD4_month))) |>
+  left_join(Patient, by = "ID") |>
+  filter((!is.na(CD4_date) & CD4_date < enrollment_date) |
+         (!is.na(CD4_date_ym) & CD4_date_ym < enrollment_date) | 
+         (is.na(CD4_date) & CD4_year < enroll_year)) |> 
+  group_by(ID) |>
+  slice_min(order_by = CD4, with_ties = FALSE) |>
+  mutate(CD4_count = case_when(
+    is.na(CD4) ~ NA_character_,
+    CD4 < 200 ~ "<200",
+    TRUE ~ ">200")) |>
+  select(ID, CD4, CD4_count)
+
+VL_filtered <- VL |>
+  mutate(VL_date = as.Date(paste(VL_year, VL_month, VL_day, sep = "-"))) |>
+  left_join(Patient, by = "ID") |>
+  filter(VL_date <= enrollment_date) |>
+  group_by(ID) |>
+  slice_max(order_by = VL_date, with_ties = FALSE) |>
+  mutate(viral_load = case_when(
+    is.na(vload) ~ NA_character_,
+    vload < 200 ~ "suppressed",
+    TRUE ~ "Unsuppressed")) |>
+  select(ID, vload, viral_load)
+
+Immune_function_data <- Patient |>
+  left_join(CD4_filtered, by = "ID") |>
+  left_join(VL_filtered, by = "ID") |>
+  mutate(
+    Immune_function = case_when(
+      is.na(CD4_count) | is.na(viral_load) | is.na(adiflag) ~ NA_integer_,
+      (CD4_count == "<200" | adiflag == 1) & viral_load == "suppressed" ~ 0,
+      (CD4_count == "<200" | adiflag == 1) & viral_load == "Unsuppressed" ~ 1,
+      (CD4_count == ">200" & adiflag == 0) & viral_load == "suppressed" ~ 2,
+      TRUE ~ 3
+    )
+  ) |>
+  mutate(Immune_function = factor(Immune_function, 
+       levels = c(3, 0, 1, 2), 
+       labels = c("Good Immune, Unsuppressed",
+                  "Poor Immune, Suppressed", 
+                  "Poor Immune, Unsuppressed", 
+                  "Good Immune, Suppressed"
+                  )))
+
+# Left join only the Immune_function variable from Immune_function_data to Patient data
+Patient <- Patient |>
+  left_join(Immune_function_data |> select(ID, Immune_function), by = "ID")
+
+```
+
+**Time- t**
+
+-   Time from enrollment date to first of cancer diagnosis or loss to followup. Numeric, measured in years (with fractions of a year rounded to the thousandth decimal -- e.g., 48 days should be coded 0.131).
+
+-   **Handling Missing Cancer Diagnosis Date**: For individuals who did not have a cancer diagnosis by the end of the study, **time (T)** was calculated as the time from **enrollment to the censoring date** (i.e., the last date the individual was followed). This approach filled missing data by assigning the time from enrollment to the censoring date for those who were cancer-free by the study's end.
+
+-   **Missing Date Information:** In cases where only the year of date was available, but the month and day were missing, it was assumed that the event (e.g., enrollment or diagnosis) occurred on the 1st day of the year. This approach maximized the use of available data while minimizing the impact of missing dates.
+
+    ```{r}
+    Patient <- Patient |>
+      mutate(
+        LTFU_date = ifelse(
+          complete.cases(LTFU_year, LTFU_month, LTFU_day),
+          sprintf("%d-%02d-%02d", LTFU_year, LTFU_month, LTFU_day),
+          NA_character_
+        ),
+        LTFU_YM = ifelse(
+          is.na(LTFU_day) & complete.cases(LTFU_year, LTFU_month),
+          sprintf("%d-%02d-01", LTFU_year, LTFU_month),
+          NA_character_
+        ),
+       
+        cancerdx_date = ifelse(
+          complete.cases(cancerdx_year, cancerdx_month, cancerdx_day),
+          sprintf("%d-%02d-%02d", cancerdx_year, cancerdx_month, cancerdx_day),
+          NA_character_
+        ),
+        cancerdx_YM = ifelse(
+          is.na(cancerdx_day) & complete.cases(cancerdx_year, cancerdx_month),
+          sprintf("%d-%02d-01", cancerdx_year, cancerdx_month),
+          NA_character_
+        ),
+        censoring_date = as.Date("2020-12-31", format = "%Y-%m-%d"),
+        
+    t =round(
+        pmax(0,
+         ifelse(
+          !is.na(cancerdx_date) | !is.na(LTFU_date) | !is.na(censoring_date),
+          as.numeric(difftime(
+            pmin(as.Date(cancerdx_date, format = "%Y-%m-%d"),
+                 as.Date(LTFU_date, format = "%Y-%m-%d"),
+                         censoring_date, na.rm = TRUE),
+                as.Date(enrollment_date, format = "%Y-%m-%d"), 
+              units = "days"
+              )) / 365.25,
+     # If year and month are available but not day, calculate based on that
+         ifelse(
+          !is.na(cancerdx_YM) | !is.na(LTFU_YM) | !is.na(censoring_date),
+          as.numeric(difftime(
+           pmin(as.Date(cancerdx_YM, format = "%Y-%m-%d"),
+                as.Date(LTFU_YM, format = "%Y-%m-%d"),
+                       censoring_date, na.rm = TRUE),
+                as.Date(enrollment_date, format = "%Y-%m-%d"), units = "days"
+                )) / 365.25,
+                
+      # If only year is available, calculate time based on year
+         ifelse(
+          !is.na(cancerdx_year) | !is.na(LTFU_year) | !is.na(censoring_date),
+          as.numeric(difftime(
+            pmin(as.Date(paste(cancerdx_year, "-12-31", sep = ""), 
+                         format = "%Y-%m-%d"),
+                 as.Date(paste(LTFU_year, "-12-31", sep = ""),
+                         format = "%Y-%m-%d"),
+                         censoring_date, na.rm = TRUE),
+                 as.Date(paste(enroll_year, "-12-31", sep = ""), 
+                         format = "%Y-%m-%d"), units = "days"
+                  )) / 365.25,
+     # If no dates available, use censoring date
+       ifelse(
+        !is.na(enrollment_date) | !is.na(censoring_date),
+         as.numeric(difftime(censoring_date, 
+                             as.Date(enrollment_date, 
+                                     format = "%Y-%m-%d"), 
+                             units = "days")) / 365.25))))),3))
+
+    ```
+
+**Cancer**
+
+Indicator for cancer diagnosis
+
+1=patient diagnosed with cancer during the study period (prior to loss to follow up);
+
+0=patient was censored before cancer diagnosis.
+
+-   **Cancer Diagnosis Prior to Enrollment:** If a cancer diagnosis was recorded prior to enrollment, the individual was labeled as having cancer at the time of enrollment (coded as 0). This indicates that the patient had an established diagnosis before entering the study, allowing for accurate stratification of cancer status at baseline.
+
+```{r}
+
+Patient <- Patient |>
+  mutate(
+    Cancer_D = ifelse(is.na(cancerdx_year), 0,
+      ifelse(
+            (is.na(cancerdx_date)), 0,
+      ifelse(
+        cancerdx_date < enrollment_date, 0,
+      ifelse(
+          (!is.na(LTFU_date) & !is.na(cancerdx_date) & LTFU_date < cancerdx_date), 0,
+          
+      ifelse((enrollment_date < cancerdx_date & (is.na(LTFU_date) | 
+                                                     cancerdx_date < LTFU_date)) |
+             (enrollment_date < cancerdx_YM & (is.na(LTFU_YM) | 
+                                                    cancerdx_YM < LTFU_YM)) |
+             (enroll_year < cancerdx_year & (is.na(LTFU_year) |
+                                                    cancerdx_year < LTFU_year)),
+             1,0))))))
+```
+
+## Final Data
+
+### **Inclusion criteria:**
+
+-   Adults aged 18 years or older
+
+-   Individuals who had complete data on Immune function.
+
+```{r}
+analytic_file <- Patient |>
+  filter(age > 18, 
+         !is.na(Immune_function), 
+         Immune_function != "Poor Immune, Suppressed") |>
+  droplevels() |>
+  select(ID, Immune_function, t, Cancer_D, age) |>
+  rename(Age = age, 
+         Cancer = Cancer_D)
+
+
+write.csv(analytic_file, analytic_file_path, row.names = FALSE)
+```
+
+-   **Poor Immune, Suppressed**
+
+**Reason for Exclusion**: The "Poor Immune, Suppressed" category was excluded because it had only two participant, making statistical analysis unreliable and the findings non-generalizable.
+
+**Reason for Not Merging**: Merging this category with others could obscure its unique characteristics and lead to inaccurate or misleading interpretations of the data.
+
+# Flowchart: Participant Selection
+
+```{r}
+Patient |>
+  as_fc(label = "Initial Participant") |>
+  fc_filter(age > 18, label = "Age > 18", show_exc = TRUE, offset_exc = 0.1) |>
+  fc_filter(!is.na(Immune_function), label = "Participants with Complete Immune Function", show_exc = TRUE, offset_exc = 0.1) |>
+  fc_filter(Immune_function != "Poor Immune, Suppressed", label = "Final number of participant", show_exc = TRUE, offset_exc = 0.1) |> 
+  fc_split(Cancer_D, label = c("0" = "No", "1" = "Yes"), title = "Cancer", bg_fill_title = "skyblue", offset = -0.1) |>
+  fc_draw()
+```
+
+The initial cohort consisted of **1000 participants**. After applying an **age filter**, **935 participants** were retained, ensuring that only individuals over 18 years of age were included. Subsequently, a further filter for participants with **complete immune function** reduced the sample to **891 participants**. The **"Poor Immune, Suppressed"** category was then excluded from the analysis due to having only **two participants**, which would render statistical analysis unreliable and the findings non-generalizable. Merging this category with others was avoided to preserve its unique characteristics and prevent potential misinterpretations. Therefore, the final sample consisted of **890 participants**.
+
+# Analysis
+
+## Exploratory Analysis
+
+```{r}
+analytic_file|> 
+  select(-c(ID))|>
+  tbl_summary()
+```
+
+Age
+
+```{r}
+Age <- ggplot(analytic_file, aes(Age)) + 
+    geom_histogram(aes(y = after_stat(density)),
+                   breaks = seq(0, 100, 1),
+                   color = "darkblue",
+                   fill = "skyblue", 
+                   alpha = 0.7, 
+                   binwidth = 4,) +
+  labs(title = "Fig 1. Distribution of Age ")+
+  geom_density(color = "red")+
+  theme_bw() + 
+  theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))+
+  annotate("text", x = 90, y = 0.025, 
+           label = paste("Mean =",round(mean(analytic_file$Age, na.rm = TRUE), 2)),
+           color = "red")
+
+ggplotly(Age)
+
+```
+
+-   This is an **interactive plot**. To explore the density at specific ages, hover your cursor over the histogram for detailed information.
+
+Time
+
+```{r}
+Time <- ggplot(analytic_file, aes(t)) + 
+  geom_histogram(aes(y = after_stat(density)), 
+                 breaks = seq(0, 100, 1), 
+                 color = "black", 
+                 fill = "skyblue", 
+                 alpha = 0.7, 
+                 binwidth = 4) +
+  labs(title = "Fig 2. Time from Enrollment to Cancer Diagnosis or Censoring", 
+       x = "Time in years") +
+  theme_bw() + 
+  theme( plot.title = element_text(size = 9, face = "bold", hjust = 0.5))+
+  coord_cartesian(xlim = c(0, 10)) +
+  annotate("text", 
+           x = 9, y = 0.35, 
+           label = paste("Mean =", 
+                         round(mean(analytic_file$t, na.rm = TRUE), 2)), 
+           color = "red")
+
+ggplotly(Time)
+```
+
+-   This is an **interactive plot**. To explore the density at specific Time, hover your cursor over the histogram for detailed information.
+
+Immune function
+
+```{r}
+ggplot(analytic_file, aes(x = Immune_function, fill = Immune_function)) +
+  geom_bar(width = 0.7, show.legend = TRUE) + 
+  geom_text(stat = "count", 
+            aes(label = paste0(round(prop.table(after_stat(count)) * 100,1),
+                               "%\n(", ..count.., ")"), vjust = 0.6)) +
+  labs(title = "Fig 3. Distribution for Immune Function", 
+       y = "Frequency", x = "Immune Function") +
+  scale_fill_brewer(labels = c("Good, Unsuppressed",
+                    "Poor, Not Suppressed", 
+                    "Good, Suppressed"
+                    ),
+                    name = NULL) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(), axis.text.x = element_blank(), 
+        legend.position = "bottom", 
+        plot.title = element_text(size = 12, face = "bold", hjust = 0.5)) +
+  coord_cartesian(ylim = c(0, 470))
+
+```
+
+Cancer
+
+```{r}
+
+f <- table(analytic_file$Cancer)
+colors <- c("darkblue", "lightblue")
+labels <- paste(f, "(", round(prop.table(f) * 100, 1), "%)", sep = "")
+
+par(mar = c(1,1,0.3,1))
+pie3D(f, labels = labels, main = "Fig 4. Cancer Distribution", 
+      col = colors, 
+      explode = 0.1,
+      theta = 0.7,
+      start = pi / 2)
+
+mtext("Fig 4. Cancer Distribution",
+      side = 3, 
+      line = 1, 
+      cex = 1.0, 
+      font = 1)
+abline(h = par("usr")[4] + 0.1, col = "black", lwd = 1)
+
+legend("bottom", 
+       legend = c("Censored","Diagnosed"), 
+       fill = colors,
+       bty = "n", 
+       cex = 0.9, 
+       inset = c(0, -0.15))
+
+box(lwd = 1)
+```
+
+In the **exploratory analysis**, the distribution of immune function revealed that **48%** of participants were categorized as **"Poor Immune, Unsuppressed,"** **41%** as **"Good Immune, Unsuppressed,"** and **11%** as **"Good Immune, Suppressed."** The **median age** of the participants was **51 years** (interquartile range: **36 to 68 years**), indicating a **diverse age range**.
+
+Among the participants, **23%** reported having cancer. The **median time** from enrollment to either the first cancer diagnosis or loss to follow-up was **1.96 years**, with a **95% confidence interval** ranging from **0.19 to 4.52 years**, reflecting **moderate variability** in the time to cancer diagnosis or loss to follow-up.
+
+## Bivariate analysis
+
+```{r}
+analytic_file |> 
+  select(-ID) |> 
+  tbl_summary(by = Immune_function) |> 
+  add_n() |> 
+  add_p() |> 
+  as_gt() |> 
+  tab_header(title = md("Participant Characteristics by Immunity")) |> 
+  cols_width(
+    everything() ~ px(100))
+
+```
+
+The bivariate analysis compares participant characteristics by immune function: **Good Immune, Unsuppressed**, **Poor Immune, Unsuppressed**, and **Good Immune, Suppressed**. The median time to cancer diagnosis was significantly longer for **Good Immune, Unsuppressed** (2.98 years) compared to **Poor Immune, Unsuppressed** (1.13 years) and **Good Immune, Suppressed** (2.96 years), with a p-value \< 0.001. **Poor Immune, Unsuppressed** participants had the highest cancer prevalence (36%), while **Good Immune, Unsuppressed** and **Good Immune, Suppressed** had lower rates (13% and 4.2%, respectively), with a p-value \< 0.001. The median age was similar across the immune function groups (48 years for **Good Immune, Unsuppressed**, 52 years for **Poor Immune, Unsuppressed**, and 48 years for **Good Immune, Suppressed**), with no significant difference (p-value = 0.13).
+
+**Plotting Function**
+
+```{r}
+km_plot <- function(N, km_fit, plot_type, plot_title) {
+  
+  # Determine if legend should be shown based on plot_type
+  show_legend <- ifelse(plot_type == "pct", TRUE, FALSE)
+  
+  # Create the base plot
+  plot <- ggsurvplot(km_fit, 
+                     fun = plot_type, 
+                     palette = c("#483D8B", "#DC143C", "#6B8E23", "#4682B4"),
+                     xlim = c(0, 7),
+                     title = paste("Fig", N, ".", plot_title, "curve"),
+                     legend.title = " ", 
+                     legend.labs = c("Good, Unsuppressed",
+                                     "Poor, Unsuppressed", 
+                                     "Good, Suppressed"),
+                     conf.int = TRUE,
+                     pval = TRUE,
+                     risk.table = TRUE,
+                     tables.y.text = FALSE,
+                     tables.height = 0.28,
+                     tables.col = "strata",
+                     tables.theme = theme_cleantable(),
+                     ggtheme = theme_minimal() + 
+                       theme(plot.title = element_text(size = 9,
+                                                       face = "bold", 
+                                                       hjust = 0.5, 
+                                                       vjust = -2),
+                             panel.border = element_rect(color = "black", 
+                                                         fill = NA, 
+                                                         size = 1),
+                             legend.text = element_text(size = 6),
+                             # Show legend only for "pct" plot type (Survival Curve)
+                             legend.position = ifelse(show_legend, "right", "none"))
+  )
+  
+  # If the plot_type is not "pct", remove the legend from the main plot
+  if (plot_type != "pct") {
+    plot$plot <- plot$plot + theme(legend.position = "none")
+  }
+
+  # Explicitly remove the legend from the risk table if necessary
+  plot$table <- plot$table + theme(legend.position = "none")
+  
+  # Return the plot with conditional legend visibility
+  return(plot)
+}
+
+
+```
+
+## Kaplan-Meier survival curve
+
+```{r}
+
+km_fit <- survfit(Surv(t, Cancer) ~ Immune_function, 
+                  data = analytic_file)
+
+Survival_curve <- km_plot(5,km_fit,"pct",
+        "Kaplan-Meier Time to Cancer Diagnosis for 7 year risk of cancer")
+  Risk_curve <-  km_plot(6, km_fit, "event", "Cumulative Risk")
+Hazard_curve <- km_plot(7,km_fit, "cumhaz", "Cumulative Hazard")
+
+pdf(Kaplan_Meier_Combined_Curves, width = 8, height = 4)
+grid.arrange(Survival_curve$plot, 
+             Survival_curve$table,
+             ncol = 1,              # One column for Survival plot and table
+             heights = c(1, 0.35),   # Adjust height of Survival plot and table
+             widths = c(6))      # Adjust width of Survival plot and table
+
+grid.arrange(Risk_curve$plot, 
+             Hazard_curve$plot, 
+             ncol = 2,             # Two columns for Risk and Hazard curves
+             heights = c(3),       # Adjust height of both plots
+             widths = c(6, 6))     # Adjust width of both plots
+dev.off()
+
+Survival_curve
+Risk_curve$plot | Hazard_curve$plot
+```
+
+```{r}
+# Create the KM summary at specific times
+tbl_survfit(km_fit, 
+              times = c(0,1,7), 
+             label_header = "**{time} Year**")|> 
+  as_gt()|>
+  tab_header(title = md("Cancer outcome at 0, 1 and 7 years"))
+```
+
+Cancer outcomes were observed at 0, 1, and 7 years based on immune function status. At year 0, all participants, regardless of immune function, showed a 100% survival rate. At 1 year, survival rates remained high for **Good Immune, Unsuppressed** (97%) and **Good Immune, Suppressed** (99%) participants, while **Poor Immune, Unsuppressed** participants had a notably lower survival rate of 86%. By 7 years, survival rates for **Good Immune, Unsuppressed** declined to 75%, while **Poor Immune, Unsuppressed** participants showed a dramatic drop to 23%. In contrast, **Good Immune, Suppressed** participants maintained a high survival rate of 93% at 7 years, illustrating a significant difference in cancer outcomes based on immune function status.
+
+```{r}
+# Fit the survival model using survdiff
+surv_fit <- survdiff(Surv(t, Cancer) ~ Immune_function, data = analytic_file)
+
+data.frame(
+  N = surv_fit$n,
+  Observed = surv_fit$obs,
+  Expected = round(surv_fit$exp)
+) |> gt()|> tab_header(title = "Cancer outcome: Observed vs. Expected")
+```
+
+The comparison of observed versus expected cancer outcomes by immune function status revealed notable differences. For participants in the **Good Immune, Unsuppressed** group, 46 cancer cases were observed, which is substantially lower than the 107 expected cases. In the **Poor Immune, Unsuppressed** group, 155 cancer cases were observed, significantly higher than the expected 72 cases. Lastly, in the **Good Immune, Suppressed** group, 4 cancer cases were observed, which is considerably lower than the 26 expected cases. These discrepancies suggest that immune function status plays a critical role in cancer outcomes, with certain groups experiencing outcomes that differ markedly from what would be expected based on general population trends.
+
+## Cox proportional hazards model
+
+```{r}
+m1 <- coxph(Surv(t, Cancer) ~ Immune_function, data = analytic_file)
+UnAdjusted <- ggcoxzph(cox.zph(m1))
+m2 <- coxph(Surv(t, Cancer) ~ Immune_function+Age, data = analytic_file)
+Adjusted <- ggcoxzph(cox.zph(m2))
+
+UnAdjusted
+Adjusted
+```
+
+The **Schoenfeld residuals test** suggests that there are **no violations of the proportional hazards assumption** for either immune function or age, as the p-values are all much larger than 0.05. This implies that the hazard ratios for both immune function and age are valid over time, and the assumptions required for Cox proportional hazards modeling are met. Therefore, the conclusions drawn from the models regarding the effects of immune function and age on cancer risk are reliable.
+
+The **Schoenfeld residuals tests** reinforce the validity of both models, suggesting that the observed relationships between the covariates (immune function and age) and cancer risk are consistent over time.
+
+```{r}
+Unadjusted <- tbl_uvregression(
+  analytic_file,
+  method = coxph,
+  y = Surv(t, Cancer),
+  exponentiate = TRUE,
+  hide_n = TRUE,
+  include = c("Immune_function"),
+  pvalue_fun = label_style_pvalue(digits = 2)
+)
+
+Adjusted <- tbl_uvregression(
+  analytic_file,
+  method = coxph,
+  y = Surv(t, Cancer),
+  exponentiate = TRUE,
+  hide_n = TRUE,
+  include = c("Immune_function", "Age"),
+  pvalue_fun = label_style_pvalue(digits = 2)
+)
+
+ tbl_merge(
+  tbls = list( Unadjusted, Adjusted),
+  tab_spanner = c( "**Unadjusted**", "**Adjusted (Age)**")
+  )|>
+  as_gt()|>
+  tab_header(title = "Time to Cancer")
+```
+
+In this analysis, the risk of cancer was assessed based on immune function and age. For individuals with **Poor Immune, Unsuppressed**, the hazard ratio (HR) was 5.06 (95% CI: 3.64, 7.05) with a p-value \< 0.001, indicating that they had a significantly higher risk of developing cancer compared to the reference group, **Good Immune, Unsuppressed**. This risk remained unchanged after adjusting for age, suggesting that poor immune function, irrespective of age, is a strong predictor of cancer risk. On the other hand, individuals with **Good Immune, Suppressed** had a hazard ratio of 0.36 (95% CI: 0.13, 0.99) with a p-value of 0.048, indicating a significantly lower risk of cancer. This protective effect persisted after adjusting for age, highlighting the importance of viral load suppression in reducing cancer risk.
+
+Regarding age, the hazard ratio was 1.00 (95% CI: 1.00, 1.01) both before and after adjustment, with a p-value of 0.44, indicating that age did not significantly influence cancer risk in this cohort. Overall, immune function, particularly in terms of viral load suppression, was a far more significant predictor of cancer risk than age.
+
+# Results
+
+The study population consisted of adults over 18 years living with HIV (PWH). The primary exposure of interest was poor immune function, defined by two criteria: a history of an AIDS-defining illness (ADI), such as certain cancers, opportunistic infections, or other serious HIV-related conditions, and a CD4 count of less than 200 cells/mm³ prior to enrollment, indicating advanced immune suppression. This exposure was further categorized by viral suppression status at enrollment, with participants having either a viral load of less than 200 copies/mL (viral suppression) or 200 copies/mL or higher (no viral suppression).
+
+The initial cohort comprised 1000 participants. After applying an age filter, 935 participants remained. A subsequent filter for complete immune function further refined the sample to 891 participants. Due to the small size of the "Poor Immune, Suppressed" category, which included only two participants, this group was excluded to ensure statistical reliability. As a result, the final analysis included 890 participants.
+
+The immune function distribution was as follows: 48% of participants were categorized as "Poor Immune, unsuppressed," 41% as "Good Immune, unsuppressed," and 11% as "Good Immune, Suppressed." The median age of participants was 51 years (IQR: 36-68), and 23% of participants reported a cancer diagnosis. The median time from enrollment to the first cancer diagnosis or loss to follow-up was 1.96 years (95% CI: 0.19--4.52 years). Notably, the median time to cancer diagnosis or loss to follow-up significantly differed across immune function groups (p \< 0.001). Participants in the "Good Immune, Unsuppressed" group had the longest median time (2.98 years, IQR: 0.91--5.56), while those in the "Poor Immune, Unsuppressed" group had the shortest (1.13 years, IQR: 0.00--3.27). Cancer prevalence was highest in the "Poor Immune, Unsuppressed" group (36%) compared to the "Good Immune, Suppressed" group (4.2%) (p \< 0.001). No significant age differences were observed across immune function groups (p = 0.13). These findings underscore the critical role of immune function in the timing of cancer diagnosis and cancer prevalence among individuals living with HIV.
+
+The survival outcomes for cancer diagnosis at 0, 1, and 7 years were also examined. At 0 years, all participants across immune function categories were cancer-free. At 1 year, 97% of participants with "Good Immune, Unsuppressed" remained cancer-free, while 86% of participants with "Poor Immune, Unsuppressed" and 99% of participants with "Good Immune, Suppressed" remained cancer-free. By 7 years, 75% of participants with "Good Immune, Unsuppressed" remained cancer-free, while only 23% of participants with "Poor Immune, Unsuppressed" and 93% of participants with "Good Immune, Suppressed" remained cancer-free.
+
+Cancer outcomes were analyzed by comparing the observed versus expected cancer frequencies based on immune function status. In the "Good Immune, Unsuppressed" group (N = 365), 46 cancer cases were observed, significantly lower than the expected 107 cases. In the "Poor Immune, Unsuppressed" group (N = 429), 155 cancer cases were observed, much higher than the expected 72 cases. In the "Good Immune, Suppressed" group (N = 96), only 4 cancer cases were observed, significantly lower than the expected 26 cases.
+
+Regarding hazard ratios, immune function was strongly associated with cancer risk in both models. The "Poor Immune, Unsuppressed" group had a significantly higher risk of cancer, with a hazard ratio of 5.0669 (95% CI: 3.6388--7.0554) in the first model and 5.067 (95% CI: 3.639--7.055) in the second model, compared to the reference group, "Good Immune, Unsuppressed." In contrast, the "Good Immune, Suppressed" group had a significantly lower risk of cancer, with a hazard ratio of 0.3562 (95% CI: 0.1282--0.9896) in the first model and 0.3563 (95% CI: 0.1283--0.990) in the second model. The inclusion of age in the second model did not significantly affect cancer risk (hazard ratio of 0.9997, 95% CI: 0.9924--1.0071, p = 0.9313) and resulted in only a minimal improvement in the concordance statistic, from 0.705 in the first model to 0.709 in the second model.
+
+In conclusion, individuals in the "Poor Immune, Unsuppressed" group were at significantly higher risk of cancer, while those in the "Good Immune, Suppressed" group were at significantly lower risk. Age, when adjusted for immune function, did not significantly affect cancer risk, and its inclusion did not improve the model's performance significantly. Therefore, immune function, rather than age, is the most important predictor of cancer outcomes in this population. The validity of the proportional hazards assumption was confirmed by the Schoenfeld residuals test, which showed no violations for either immune function or age, ensuring that the conclusions drawn from the models are reliable and valid over time.
+
+```{r}
+rm(list = ls()) #clean environment
+```
