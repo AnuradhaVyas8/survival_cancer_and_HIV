@@ -1,11 +1,11 @@
-** Association between poor immune function and cancer risk in adult people with HIV following enrollment **
+# Association between poor immune function and cancer risk in adult people with HIV following enrollment 
 
-*Introduction*
+## Introduction
 Study Population: The analytic study population consisted of adults (>18 years old) living with HIV (PWH) who were enrolled in the study.
 
-*Exposure Definition*
+## Exposure Definition
 
-The primary exposure in this study was poor immune function, defined by:
+### The primary exposure in this study was poor immune function, defined by:
 
 AIDS-defining illness (ADI): A history of any condition classified as an AIDS-defining illness, such as certain cancers, opportunistic infections, or other serious HIV-related conditions.
 
